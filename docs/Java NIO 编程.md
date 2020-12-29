@@ -553,22 +553,580 @@ public class NIOFileChannel04 {
 2. 目的：理解 `NIO` 非阻塞网络编程机制
 3. 看老师代码演示
 
-```java
+服务端代码
 
+```java
+package life.codedw.nio;
+
+
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.Set;
+
+public class NIOServer {
+    public static void main(String[] args) throws Exception {
+        //创建ServerSocketChannel
+        ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
+
+        //得到一个Selector
+        Selector selector = Selector.open();
+
+        //绑定一个端口，在服务器端监听
+        serverSocketChannel.socket().bind(new InetSocketAddress(6666));
+
+        //设置非阻塞
+        serverSocketChannel.configureBlocking(false);
+
+        //把serverSocketChannel注册到selector关心事件为OP_ACCEPT
+        serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+
+        System.out.println("注册后的selectionkey 数量=" + selector.keys().size()); // 1
+
+        //循环等待客户端连接
+        while (true) {
+
+            //等待1秒，如果没有事件发生，返回
+            if (selector.select(1000) == 0) {//没有事件发生
+                System.out.println("服务器等待了1秒，无连接");
+                continue;
+            }
+
+            //如果返回非0,就获取到相关的selectionKey集合
+            //表示已经获取到关注的事件
+            //selector.selectedKeys() 返回关注事件的集合
+            //通过selectionKeys可以反向获取通道
+            Set<SelectionKey> selectionKeys = selector.selectedKeys();
+
+            //遍历 Set<SelectionKey>
+            Iterator<SelectionKey> keyIterator = selectionKeys.iterator();
+            System.out.println("selectionKeys 数量 = " + selectionKeys.size());
+
+            while (keyIterator.hasNext()) {
+                //获取到SelectionKey
+                SelectionKey key = keyIterator.next();
+                //根据key对应的通道发生事件做相应的处理
+                if (key.isAcceptable()) {//如果是OP_ACTIVE
+                    //该客户端生成一个SocketChannel
+                    SocketChannel socketChannel = serverSocketChannel.accept();
+                    System.out.println("客户端连接成功，生成了一个socketChannel "+socketChannel.hashCode());
+                    //将socketChannel设置为非阻塞
+                    socketChannel.configureBlocking(false);
+                    //将当前socketChannel注册到selector
+                    //关注事件为OP_READ,同时给socketChannel关联一个Buffer
+                    socketChannel.register(selector, SelectionKey.OP_READ, ByteBuffer.allocate(1024));
+                }
+                if (key.isReadable()) {//如果是OP_READ
+                    //通过key反向获取到对应的Channel
+                    SocketChannel channel = (SocketChannel) key.channel();
+                    //获取到该channel关联的buffer
+                    ByteBuffer buffer = (ByteBuffer) key.attachment();
+                    channel.read(buffer);
+                    System.out.println("from 客户端 "+new String(buffer.array()));
+                }
+                //手动从集合中移动当前的selectionKey，防止重复操作
+                keyIterator.remove();
+            }
+        }
+    }
+}
+```
+
+客户端代码
+
+```java
+package life.codedw.nio;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SocketChannel;
+
+public class NIOClient {
+    public static void main(String[] args) throws Exception {
+        //得到一个网络通道
+        SocketChannel socketChannel = SocketChannel.open();
+        //设置非阻塞
+        socketChannel.configureBlocking(false);
+        //提供服务器端的ip和端口
+        InetSocketAddress inetSocketAddress = new InetSocketAddress("127.0.0.1", 6666);
+        //连接服务器
+        if (!socketChannel.connect(inetSocketAddress)){
+            while (!socketChannel.finishConnect()){
+                System.out.println("因为连接需要时间，客户端不会阻塞，可以做些其他工作...");
+            }
+        }
+        //...连接成功，就发送数据
+        String str = "hello,codedw王";
+        ByteBuffer buffer = ByteBuffer.wrap(str.getBytes());
+        //发送数据,将buffer数据写入到channel
+        int write = socketChannel.write(buffer);
+        System.in.read();
+    }
+}
 ```
 
 
 
 ## SelectionKey
 
+1. SelectionKey，表示Selector和网络通道的注册关系，共四种：
 
+   - `int OP_ACCEPT`：有新的网络连接可以 `accept`，值为 `16`
+   - `int OP_CONNECT`：代表连接已经建立，值为 `8`
+   - `int OP_READ`：代表读操作，值为 `1`
+   - `int OP_WRITE`：代表写操作，值为 `4`
+
+   ```java
+   public static final int OP_READ = 1 << 0;
+   public static final int OP_WRITE = 1 << 2;
+   public static final int OP_CONNECT = 1 << 3;
+   public static final int OP_ACCEPT = 1 << 4;
+   ```
+
+2. `SelectionKey` 相关方法
+
+   ![chapter03_12](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201201225859.png)
 
 ## ServerSocketChannel
 
+1. `ServerSocketChannel` 在服务器端监听新的客户端 `Socket` 连接
 
+2. 相关方法如下
+
+   ![img](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201201225547.png)
 
 ## SocketChannel
 
+1. `SocketChannel`，网络 `IO` 通道，具体负责进行读写操作。`NIO` 把缓冲区的数据写入通道，或者把通道里的数据读到缓冲区。
 
+2. 相关方法如下
+
+   ![img](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201201225738.png)
 
 ## 实例-群聊系统
+
+1. 编写一个 `NIO` 群聊系统，实现服务器端和客户端之间的数据简单通讯（非阻塞）
+2. 实现多人群聊
+3. 服务器端：可以监测用户上线，离线，并实现消息转发功能
+4. 客户端：通过 `Channel` 可以无阻塞发送消息给其它所有用户，同时可以接受其它用户发送的消息（有服务器转发得到）
+5. 目的：进一步理解 `NIO` 非阻塞网络编程机制
+6. 示意图分析和代码
+
+![img](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201201225806.png)
+
+代码
+
+```java
+// 服务端：
+package life.codedw.nio.groupchat;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+
+public class GroupChatServer {
+
+    //定义属性
+    private Selector selector;
+    private ServerSocketChannel listenChannel;
+
+    private static final int PORT = 6667;
+
+    //构造器
+    //初始化工作
+    public GroupChatServer() {
+        try {
+            //得到选择器
+            selector = Selector.open();
+            //ServerSocketChannel
+            listenChannel = ServerSocketChannel.open();
+            //绑定端口
+            listenChannel.socket().bind(new InetSocketAddress(PORT));
+            //设置非阻塞模式
+            listenChannel.configureBlocking(false);
+            //将该 listenChannel 注册到 selector
+            listenChannel.register(selector, SelectionKey.OP_ACCEPT);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void listen() {
+        try {
+            //循环处理
+            while (true) {
+                int count = selector.select();
+                if (count > 0) { //有事件处理
+                    // 遍历得到 selectionKey 集合
+                    Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+                    while (iterator.hasNext()) {
+                        //取出 selectionkey
+                        SelectionKey key = iterator.next();
+                        //监听到 accept
+                        if (key.isAcceptable()) {
+                            SocketChannel sc = listenChannel.accept();
+                            sc.configureBlocking(false);
+                            //将该 sc 注册到 seletor
+                            sc.register(selector, SelectionKey.OP_READ);
+                            //提示
+                            System.out.println(sc.getRemoteAddress() + " 上线 ");
+                        }
+                        if (key.isReadable()) {//通道发送read事件，即通道是可读的状态
+                            // 处理读(专门写方法..)
+                            readData(key);
+                        }
+                        //当前的 key 删除，防止重复处理
+                        iterator.remove();
+                    }
+                } else {
+                    System.out.println("等待....");
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            //发生异常处理....
+        }
+    }
+
+    //读取客户端消息
+    public void readData(SelectionKey key) {
+        SocketChannel channel = null;
+        try {
+            //得到 channel
+            channel = (SocketChannel) key.channel();
+            //创建 buffer
+            ByteBuffer buffer = ByteBuffer.allocate(1024);
+            int count = channel.read(buffer);
+            //根据 count 的值做处理
+            if (count > 0) {
+                //把缓存区的数据转成字符串
+                String msg = new String(buffer.array());
+                //输出该消息
+                System.out.println("form客户端:" + msg);
+                //向其它的客户端转发消息(去掉自己),专门写一个方法来处理
+                sendInfoToOtherClients(msg, channel);
+            }
+        } catch (IOException e) {
+            try {
+                System.out.println(channel.getRemoteAddress() + "离线了..");
+                //取消注册
+                key.cancel();
+                //关闭通道
+                channel.close();
+            } catch (IOException e2) {
+                e2.printStackTrace();
+            }
+        }
+    }
+
+    //转发消息给其它客户(通道)
+    private void sendInfoToOtherClients(String msg, SocketChannel self) throws IOException {
+
+        System.out.println("服务器转发消息中...");
+        //遍历所有注册到 selector 上的 SocketChannel,并排除 self
+        for (SelectionKey key : selector.keys()) {
+            //通过 key 取出对应的 SocketChannel
+            Channel targetChannel = key.channel();
+            //排除自己
+            if (targetChannel instanceof SocketChannel && targetChannel != self) {
+                //转型
+                SocketChannel dest = (SocketChannel) targetChannel;
+                //将 msg 存储到 buffer
+                ByteBuffer buffer = ByteBuffer.wrap(msg.getBytes());
+                //将 buffer 的数据写入通道
+                dest.write(buffer);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        //创建服务器对象
+        GroupChatServer groupChatServer = new GroupChatServer();
+        groupChatServer.listen();
+    }
+}
+```
+
+```java
+// 客户端
+package life.codedw.nio.groupchat;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.Scanner;
+
+public class GroupChatClient {
+
+    //定义相关的属性
+    private final String HOST = "127.0.0.1";//服务器的ip
+    private final int PORT = 6667;//服务器端口
+    private Selector selector;
+    private SocketChannel socketChannel;
+    private String username;
+
+    //构造器,完成初始化工作
+    public GroupChatClient() throws IOException {
+
+        selector = Selector.open();
+        //连接服务器
+        socketChannel = SocketChannel.open(new InetSocketAddress(HOST, PORT));
+        //设置非阻塞
+        socketChannel.configureBlocking(false);
+        //将 channel 注册到selector
+        socketChannel.register(selector, SelectionKey.OP_READ);
+        //得到 username
+        username = socketChannel.getLocalAddress().toString().substring(1);
+        System.out.println(username + " is ok...");
+    }
+
+    //向服务器发送消息
+    public void sendInfo(String info) {
+        info = username + " 说：" + info;
+        try {
+            socketChannel.write(ByteBuffer.wrap(info.getBytes()));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    //读取从服务器端回复的消息
+    public void readInfo() {
+        try {
+            int readChannels = selector.select();
+            if (readChannels > 0) {//有可以用的通道
+                Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+                while (iterator.hasNext()) {
+                    SelectionKey key = iterator.next();
+                    if (key.isReadable()) {
+                        //得到相关的通道
+                        SocketChannel sc = (SocketChannel) key.channel();
+                        //得到一个 Buffer
+                        ByteBuffer buffer = ByteBuffer.allocate(1024);
+                        //读取
+                        sc.read(buffer);
+                        //把读到的缓冲区的数据转成字符串
+                        String msg = new String(buffer.array());
+                        System.out.println(msg.trim());
+                    }
+                }
+                iterator.remove(); //删除当前的 selectionKey,防止重复操作
+            } else {
+                //System.out.println("没有可以用的通道...");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        //启动我们客户端
+        GroupChatClient chatClient = new GroupChatClient();
+        //启动一个线程,每个 3 秒，读取从服务器发送数据
+        new Thread() {
+            public void run() {
+                while (true) {
+                    chatClient.readInfo();
+                    try {
+                        Thread.currentThread().sleep(3000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }.start();
+
+        //发送数据给服务器端
+        Scanner scanner = new Scanner(System.in);
+        while (scanner.hasNextLine()) {
+            String s = scanner.nextLine();
+            chatClient.sendInfo(s);
+        }
+    }
+}
+```
+
+## NIO与零拷贝
+
+### 零拷贝介绍
+
+1. 零拷贝是网络编程的关键，很多性能优化都离不开。
+2. 在 `Java` 程序中，常用的零拷贝有 `mmap`（内存映射）和 `sendFile`。那么，他们在 `OS` 里，到底是怎么样的一个的设计？我们分析 `mmap` 和 `sendFile` 这两个零拷贝
+3. 另外我们看下 `NIO` 中如何使用零拷贝
+
+### 传统的IO数据读写
+
+`Java` 传统 `IO` 和网络编程的一段代码
+
+```java
+File file = new File("test.txt");
+RandomAccessFile raf = new RandomAccessFile(file, "rw");
+
+byte[] arr = new byte[(int) file.length()];
+raf.read(arr);
+
+Socket socket = new ServerSocket(8080).accept();
+socket.getOutputStream().write(arr);
+```
+
+### 传统IO模型
+
+![img](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201203224143.png)
+
+**DMA**：`direct memory access` 直接内存拷贝（不使用 `CPU`）
+
+### mmap优化
+
+1. `mmap` 通过内存映射，将文件映射到内核缓冲区，同时，用户空间可以共享内核空间的数据。这样，在进行网络传输时，就可以减少内核空间到用户空间的拷贝次数。如下图
+
+2. `mmap` 示意图
+
+   ![img](https://dongzl.github.io/netty-handbook/_media/chapter03/chapter03_18.png)
+
+### sendFile优化
+
+1. `Linux2.1` 版本提供了 `sendFile` 函数，其基本原理如下：数据根本不经过用户态，直接从内核缓冲区进入到 `SocketBuffer`，同时，由于和用户态完全无关，就减少了一次上下文切换
+
+2. 示意图和小结
+
+   ![img](https://dongzl.github.io/netty-handbook/_media/chapter03/chapter03_19.png)
+
+3. 提示：零拷贝从操作系统角度，是没有 `cpu` 拷贝
+
+4. `Linux在2.4` 版本中，做了一些修改，避免了从内核缓冲区拷贝到 `Socketbuffer` 的操作，直接拷贝到协议栈，从而再一次减少了数据拷贝。具体如下图和小结：
+
+   ![img](https://codedwsharepicture.oss-cn-hangzhou.aliyuncs.com/img/20201203224312.png)
+
+5. 这里其实有一次 `cpu` 拷贝 `kernel buffer` -> `socket buffer` 但是，拷贝的信息很少，比如 `lenght`、`offset` 消耗低，可以忽略
+
+### 零拷贝的再次理解
+
+1. 我们说零拷贝，是从操作系统的角度来说的。因为内核缓冲区之间，没有数据是重复的（只有 `kernel buffer` 有一份数据）。
+2. 零拷贝不仅仅带来更少的数据复制，还能带来其他的性能优势，例如更少的上下文切换，更少的 `CPU` 缓存伪共享以及无 `CPU` 校验和计算。
+
+### mmap和sendFile的区别
+
+1. `mmap` 适合小数据量读写，`sendFile` 适合大文件传输。
+2. `mmap` 需要 `4` 次上下文切换，`3` 次数据拷贝；`sendFile` 需要 `3` 次上下文切换，最少 `2` 次数据拷贝。
+3. `sendFile` 可以利用 `DMA` 方式，减少 `CPU` 拷贝，`mmap` 则不能（必须从内核拷贝到 `Socket`缓冲区）。
+
+### NIO零拷贝案例
+
+1. 使用传统的 `IO` 方法传递一个大文件
+2. 使用 `NIO` 零拷贝方式传递（`transferTo`）一个大文件
+3. 看看两种传递方式耗时时间分别是多少
+
+```java
+NewIOServer.java
+
+package com.atguigu.nio.zerocopy;
+
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+
+//服务器
+public class NewIOServer {
+
+    public static void main(String[] args) throws Exception {
+        InetSocketAddress address = new InetSocketAddress(7001);
+        ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
+        ServerSocket serverSocket = serverSocketChannel.socket();
+        serverSocket.bind(address);
+
+        //创建buffer
+        ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+
+        while (true) {
+            SocketChannel socketChannel = serverSocketChannel.accept();
+            int readcount = 0;
+            while (-1 != readcount) {
+                try {
+                    readcount = socketChannel.read(byteBuffer);
+                } catch (Exception ex) {
+                    // ex.printStackTrace();
+                    break;
+                }
+                //
+                byteBuffer.rewind(); //倒带 position = 0 mark 作废
+            }
+        }
+    }
+}
+
+NewIOClient.java
+
+package com.atguigu.nio.zerocopy;
+
+import java.io.FileInputStream;
+import java.net.InetSocketAddress;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SocketChannel;
+
+public class NewIOClient {
+
+    public static void main(String[] args) throws Exception {
+        SocketChannel socketChannel = SocketChannel.open();
+        socketChannel.connect(new InetSocketAddress("localhost", 7001));
+        String filename = "protoc-3.6.1-win32.zip";
+        //得到一个文件channel
+        FileChannel fileChannel = new FileInputStream(filename).getChannel();
+        //准备发送
+        long startTime = System.currentTimeMillis();
+        //在 linux 下一个 transferTo 方法就可以完成传输
+        //在 windows 下一次调用 transferTo 只能发送 8m, 就需要分段传输文件,而且要主要
+        //传输时的位置=》课后思考...
+        //transferTo 底层使用到零拷贝
+        long transferCount = fileChannel.transferTo(0, fileChannel.size(), socketChannel);
+        System.out.println("发送的总的字节数 = " + transferCount + " 耗时: " + (System.currentTimeMillis() - startTime));
+
+        //关闭
+        fileChannel.close();
+    }
+}
+```
+
+## Java AIO
+
+### 基本介绍
+
+1. `JDK7` 引入了 `AsynchronousI/O`，即 `AIO`。在进行 `I/O` 编程中，常用到两种模式：`Reactor` 和 `Proactor`。`Java` 的 `NIO` 就是 `Reactor`，当有事件触发时，服务器端得到通知，进行相应的处理
+2. `AIO` 即 `NIO2.0`，叫做异步不阻塞的 `IO`。`AIO` 引入异步通道的概念，采用了 `Proactor` 模式，简化了程序编写，有效的请求才启动线程，它的特点是先由操作系统完成后才通知服务端程序启动线程去处理，一般适用于连接数较多且连接时间较长的应用
+3. 目前 `AIO` 还没有广泛应用，`Netty` 也是基于 `NIO`，而不是 `AIO`，因此我们就不详解 `AIO` 了，有兴趣的同学可以参考[《Java新一代网络编程模型AIO原理及Linux系统AIO介绍》](http://www.52im.net/thread-306-1-1.html)
+
+## BIO、NIO和AIO对比
+
+|          | BIO      | NIO                    | AIO        |
+| -------- | -------- | ---------------------- | ---------- |
+| IO模型   | 同步阻塞 | 同步非阻塞（多路复用） | 异步非阻塞 |
+| 编程难道 | 简单     | 复杂                   | 复杂       |
+| 可靠性   | 差       | 好                     | 好         |
+| 吞吐量   | 低       | 高                     |            |
+
+**举例说明**
+
+1. 同步阻塞：到理发店理发，就一直等理发师，直到轮到自己理发。
+2. 同步非阻塞：到理发店理发，发现前面有其它人理发，给理发师说下，先干其他事情，一会过来看是否轮到自己.
+3. 异步非阻塞：给理发师打电话，让理发师上门服务，自己干其它事情，理发师自己来家给你理发
+
+
+
